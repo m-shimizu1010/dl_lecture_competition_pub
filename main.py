@@ -63,11 +63,12 @@ def process_text(text):
 
 # 1. データローダーの作成
 class VQADataset(torch.utils.data.Dataset):
-    def __init__(self, df_path, image_dir, transform=None, answer=True):
+    def __init__(self, df_path, image_dir, transform=None, answer=True, max_seq_length=20):
         self.transform = transform  # 画像の前処理
         self.image_dir = image_dir  # 画像ファイルのディレクトリ
         self.df = pandas.read_json(df_path)  # 画像ファイルのパス，question, answerを持つDataFrame
         self.answer = answer
+        self.max_seq_length = max_seq_length
 
         # question / answerの辞書を作成
         self.question2idx = {}
@@ -130,22 +131,27 @@ class VQADataset(torch.utils.data.Dataset):
         """
         image = Image.open(f"{self.image_dir}/{self.df['image'][idx]}")
         image = self.transform(image)
-        question = np.zeros(len(self.idx2question) + 1)  # 未知語用の要素を追加
-        question_words = self.df["question"][idx].split(" ")
-        for word in question_words:
-            try:
-                question[self.question2idx[word]] = 1  # one-hot表現に変換
-            except KeyError:
-                question[-1] = 1  # 未知語
+        # question = np.zeros(len(self.idx2question) + 1)  # 未知語用の要素を追加
+        # question_words = self.df["question"][idx].split(" ")
+        # for word in question_words:
+        #     try:
+        #         question[self.question2idx[word]] = 1  # one-hot表現に変換
+        #     except KeyError:
+        #         question[-1] = 1  # 未知語
+        question_words = process_text(self.df["question"][idx]).split()
+        question = [self.question2idx.get(word, len(self.question2idx)) for word in question_words]
+        question = question[:self.max_seq_length]  # 最大長に制限
+        question += [0] * (self.max_seq_length - len(question))  # パディング
 
         if self.answer:
             answers = [self.answer2idx[process_text(answer["answer"])] for answer in self.df["answers"][idx]]
             mode_answer_idx = mode(answers)  # 最頻値を取得（正解ラベル）
 
-            return image, torch.Tensor(question), torch.Tensor(answers), int(mode_answer_idx)
-
+            # return image, torch.Tensor(question), torch.Tensor(answers), int(mode_answer_idx)
+            return image, torch.LongTensor(question), torch.Tensor(answers), int(mode_answer_idx)
         else:
-            return image, torch.Tensor(question)
+            # return image, torch.Tensor(question)
+            return image, torch.LongTensor(question)
 
     def __len__(self):
         return len(self.df)
@@ -288,20 +294,37 @@ def ResNet50():
 
 
 class VQAModel(nn.Module):
-    def __init__(self, vocab_size: int, n_answer: int):
+    def __init__(self, vocab_size: int, n_answer: int, 
+                 embed_dim: int = 300, lstm_hidden: int = 512):
         super().__init__()
         self.resnet = ResNet18()
+        # self.resnet = ResNet50()
+
+        self.embedding = nn.Embedding(vocab_size, embed_dim)
+        
+        self.lstm = nn.LSTM(embed_dim, lstm_hidden, batch_first=True)
+
         self.text_encoder = nn.Linear(vocab_size, 512)
 
+        # self.fc = nn.Sequential(
+        #     nn.Linear(1024, 512),
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(512, n_answer)
+        # )
         self.fc = nn.Sequential(
-            nn.Linear(1024, 512),
+            nn.Linear(512 + lstm_hidden, 512),
             nn.ReLU(inplace=True),
             nn.Linear(512, n_answer)
         )
 
     def forward(self, image, question):
         image_feature = self.resnet(image)  # 画像の特徴量
-        question_feature = self.text_encoder(question)  # テキストの特徴量
+        # question_feature = self.text_encoder(question)  # テキストの特徴量
+        
+        # 質問の処理
+        embedded_question = self.embedding(question)
+        _, (question_feature, _) = self.lstm(embedded_question)
+        question_feature = question_feature.squeeze(0)
 
         x = torch.cat([image_feature, question_feature], dim=1)
         x = self.fc(x)
@@ -358,6 +381,48 @@ def eval(model, dataloader, optimizer, criterion, device):
     return total_loss / len(dataloader), total_acc / len(dataloader), simple_acc / len(dataloader), time.time() - start
 
 
+class gcn():
+    def __init__(self):
+        pass
+
+    def __call__(self, x):
+        mean = torch.mean(x)
+        std = torch.std(x)
+        return (x - mean)/(std + 10**(-6))  # 0除算を防ぐ
+
+
+class ZCAWhitening():
+    def __init__(self, epsilon=1e-4, device="cuda"):  # 計算が重いのでGPUを用いる
+        self.epsilon = epsilon
+        self.device = device
+
+    def fit(self, images):  # 変換行列と平均をデータから計算
+        x = images[0][0].reshape(1, -1)
+        self.mean = torch.zeros([1, x.size()[1]]).to(self.device)
+        con_matrix = torch.zeros([x.size()[1], x.size()[1]]).to(self.device)
+        for i in range(len(images)):  # 各データについての平均を取る
+            x = images[i][0].reshape(1, -1).to(self.device)
+            self.mean += x / len(images)
+            con_matrix += torch.mm(x.t(), x) / len(images)
+            if i % 10000 == 0:
+                print("{0}/{1}".format(i, len(images)))
+        self.E, self.V = torch.linalg.eigh(con_matrix)  # 固有値分解
+        self.E = torch.max(self.E, torch.zeros_like(self.E)) # 誤差の影響で負になるのを防ぐ
+        self.ZCA_matrix = torch.mm(torch.mm(self.V, torch.diag((self.E.squeeze()+self.epsilon)**(-0.5))), self.V.t())
+        print("completed!")
+
+    def __call__(self, x):
+        size = x.size()
+        x = x.reshape(1, -1).to(self.device)
+        x -= self.mean
+        x = torch.mm(x, self.ZCA_matrix.t())
+        x = x.reshape(tuple(size))
+        x = x.to("cpu")
+        return x
+\
+GCN = gcn()
+# zca = ZCAWhitening()
+
 def main():
     # deviceの設定
     set_seed(42)
@@ -374,11 +439,13 @@ def main():
 
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=128, shuffle=True)
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
-
-    model = VQAModel(vocab_size=len(train_dataset.question2idx)+1, n_answer=len(train_dataset.answer2idx)).to(device)
+    
+    vocab_size = len(train_dataset.question2idx) + 1  # +1 for unknown tokens
+    model = VQAModel(vocab_size=vocab_size, n_answer=len(train_dataset.answer2idx)).to(device)
+    # model = VQAModel(vocab_size=len(train_dataset.question2idx)+1, n_answer=len(train_dataset.answer2idx)).to(device)
 
     # optimizer / criterion
-    num_epoch = 20
+    num_epoch = 30
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
 
