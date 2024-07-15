@@ -313,8 +313,10 @@ class VQAModel(nn.Module):
         # )
         self.fc = nn.Sequential(
             nn.Linear(512 + lstm_hidden, 512),
+            nn.Dropout(0.75),
             nn.ReLU(inplace=True),
-            nn.Linear(512, n_answer)
+            nn.Linear(512, n_answer),
+            nn.Dropout(0.75)
         )
 
     def forward(self, image, question):
@@ -445,7 +447,7 @@ def main():
     # model = VQAModel(vocab_size=len(train_dataset.question2idx)+1, n_answer=len(train_dataset.answer2idx)).to(device)
 
     # optimizer / criterion
-    num_epoch = 30
+    num_epoch = 70
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
 
