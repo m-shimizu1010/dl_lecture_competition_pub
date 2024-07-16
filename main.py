@@ -311,12 +311,22 @@ class VQAModel(nn.Module):
         #     nn.ReLU(inplace=True),
         #     nn.Linear(512, n_answer)
         # )
+        # dropout_rate = 0.5
+        # self.embedding = nn.Embedding(vocab_size, embed_dim)
+        # self.lstm1 = nn.LSTM(embed_dim, lstm_hidden, batch_first=True)
+        # self.dropout1 = nn.Dropout(dropout_rate)
+        # self.lstm2 = nn.LSTM(lstm_hidden, lstm_hidden, batch_first=True)
+        # self.dropout2 = nn.Dropout(dropout_rate)
+        # self.fc1 = nn.Linear(lstm_hidden, 1024)  # LSTMの出力から1024ユニットの全結合層へ
+        # self.tanh = nn.Tanh()
+        # self.fc2 = nn.Linear(1024, n_answer)  # 出力層
+
         self.fc = nn.Sequential(
             nn.Linear(512 + lstm_hidden, 512),
-            nn.Dropout(0.75),
+            nn.Dropout(0.5),
             nn.ReLU(inplace=True),
             nn.Linear(512, n_answer),
-            nn.Dropout(0.75)
+            nn.Dropout(0.5)
         )
 
     def forward(self, image, question):
@@ -327,6 +337,13 @@ class VQAModel(nn.Module):
         embedded_question = self.embedding(question)
         _, (question_feature, _) = self.lstm(embedded_question)
         question_feature = question_feature.squeeze(0)
+
+        # embedded = self.embedding(question)
+        # x, _ = self.lstm1(embedded)
+        # x = self.dropout1(x)
+        # x, (hidden, _) = self.lstm2(x)
+        # x = self.dropout2(x)
+        # question_feature = hidden[-1].squeeze(0)  # 最後の隠れ状態を使用
 
         x = torch.cat([image_feature, question_feature], dim=1)
         x = self.fc(x)
@@ -447,7 +464,7 @@ def main():
     # model = VQAModel(vocab_size=len(train_dataset.question2idx)+1, n_answer=len(train_dataset.answer2idx)).to(device)
 
     # optimizer / criterion
-    num_epoch = 70
+    num_epoch = 30
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
 
