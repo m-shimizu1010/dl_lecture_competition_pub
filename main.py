@@ -314,7 +314,8 @@ class PositionalEncoding(nn.Module):
 class VQAModel(nn.Module):
     def __init__(self, vocab_size: int, n_answer: int, d_model=512, nhead=8, num_encoder_layers=6):
         super().__init__()
-        self.resnet = ResNet18()
+        # self.resnet = ResNet18()
+        self.resnet = ResNet50()
         
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.pos_encoder = PositionalEncoding(d_model)
@@ -329,7 +330,6 @@ class VQAModel(nn.Module):
             nn.Linear(512, n_answer),
             nn.Dropout(0.5),
         )
-        self.softmax = nn.Softmax()
 
     def forward(self, image, question):
         image_feature = self.resnet(image)  # 画像の特徴量
@@ -342,7 +342,6 @@ class VQAModel(nn.Module):
 
         x = torch.cat([image_feature, question_feature], dim=1)
         x = self.fc(x)
-        x = self.softmax(x)
 
         return x
 
@@ -433,22 +432,40 @@ class ZCAWhitening():
         x = x.reshape(tuple(size))
         x = x.to("cpu")
         return x
-\
+
 GCN = gcn()
 # zca = ZCAWhitening()
 
+class RandomApply():
+    def __init__(self, transform, p=0.5):
+        self.transform = transform
+        self.p = p
+
+    def __call__(self, img):
+        if random.random() < self.p:
+            return self.transform(img)
+        return img
+    
 def main():
     # deviceの設定
     set_seed(42)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # dataloader / model
-    transform = transforms.Compose([
+    transform_train=transforms.Compose([
+            transforms.Resize((256, 256)),
+            transforms.RandomCrop(224),
+            transforms.RandomHorizontalFlip(),
+            RandomApply(transforms.ColorJitter(0.4, 0.4, 0.4, 0.1), p=0.8),
+            RandomApply(transforms.GaussianBlur((3, 3), (0.1, 2.0)), p=0.5),
+            transforms.ToTensor()
+    ])
+    transform_test = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor()
     ])
-    train_dataset = VQADataset(df_path="./data/train.json", image_dir="./data/train", transform=transform)
-    test_dataset = VQADataset(df_path="./data/valid.json", image_dir="./data/valid", transform=transform, answer=False)
+    train_dataset = VQADataset(df_path="./data/train.json", image_dir="./data/train", transform=transform_train)
+    test_dataset = VQADataset(df_path="./data/valid.json", image_dir="./data/valid", transform=transform_test, answer=False)
     test_dataset.update_dict(train_dataset)
 
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=128, shuffle=True)
@@ -462,7 +479,7 @@ def main():
     # optimizer / criterion
     num_epoch = 5
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
     # train model
     for epoch in range(num_epoch):
