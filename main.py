@@ -13,6 +13,7 @@ from torchvision import transforms
 
 import math
 
+from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
 
 def set_seed(seed):
@@ -348,22 +349,36 @@ class VQAModel(nn.Module):
 # 4. 学習の実装
 def train(model, dataloader, optimizer, criterion, device):
     model.train()
-
+    mixed_precision = True
     total_loss = 0
     total_acc = 0
     simple_acc = 0
+
+    if mixed_precision:
+        scaler = GradScaler() #混合精度用のScaler
 
     start = time.time()
     for image, question, answers, mode_answer in tqdm(dataloader):
         image, question, answer, mode_answer = \
             image.to(device), question.to(device), answers.to(device), mode_answer.to(device)
 
-        pred = model(image, question)
-        loss = criterion(pred, mode_answer.squeeze())
+        if mixed_precision:
+            with autocast():
+                pred = model(image, question)
+                loss = criterion(pred, mode_answer.squeeze())
+        else:
+            pred = model(image, question)
+            loss = criterion(pred, mode_answer.squeeze())
 
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        if mixed_precision:
+            scaler.scale(loss).backward() # スケールした勾配
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0) # 勾配爆発対策に勾配をクリップ
+            scaler.step(optimizer) # optimizerに割り当てられた勾配をunscaleして更新
+            scaler.update()
+        else:
+            loss.backward()        
+            optimizer.step()
 
         total_loss += loss.item()
         total_acc += VQA_criterion(pred.argmax(1), answers)  # VQA accuracy
