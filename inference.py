@@ -27,8 +27,10 @@ def load_model_and_predict(model_path, test_data_path, image_dir, output_path):
     # モデルの準備
     vocab_size = len(test_dataset.question2idx) + 1  # +1 for unknown tokens
     # model = VQAModel(vocab_size=vocab_size, n_answer=len(test_dataset.answer2idx)).to(device)
-    model = VQAModel(vocab_size=len(train_dataset.question2idx)+1, n_answer=len(train_dataset.answer2idx), 
-                 d_model=512, nhead=8, num_encoder_layers=6).to(device)
+    # model = VQAModel(vocab_size=len(train_dataset.question2idx)+1, n_answer=len(train_dataset.answer2idx), 
+    #              d_model=512, nhead=8, num_encoder_layers=6).to(device)
+    model = VQAModel(vocab_size=vocab_size, n_answer=len(train_dataset.answer2idx)).to(device)
+
     # 保存されたモデルの重みを読み込む
     model.load_state_dict(torch.load(model_path))
     model.eval()
@@ -54,7 +56,7 @@ def load_model_and_predict(model_path, test_data_path, image_dir, output_path):
     print(f"Predictions saved to {output_path}")
 
 if __name__ == "__main__":
-    model_path = "model.pth"  # 保存したモデルのパス
+    model_path = "model25.pth"  # 保存したモデルのパス
     test_data_path = "./data/valid.json"  # テストデータのパス
     image_dir = "./data/valid"  # テスト画像のディレクトリ
     output_path = "submission.npy"  # 出力ファイルのパス
