@@ -63,12 +63,11 @@ def process_text(text):
 
 # 1. データローダーの作成
 class VQADataset(torch.utils.data.Dataset):
-    def __init__(self, df_path, image_dir, transform=None, answer=True, max_seq_length=20):
+    def __init__(self, df_path, image_dir, transform=None, answer=True):
         self.transform = transform  # 画像の前処理
         self.image_dir = image_dir  # 画像ファイルのディレクトリ
         self.df = pandas.read_json(df_path)  # 画像ファイルのパス，question, answerを持つDataFrame
         self.answer = answer
-        self.max_seq_length = max_seq_length
 
         # question / answerの辞書を作成
         self.question2idx = {}
@@ -131,27 +130,22 @@ class VQADataset(torch.utils.data.Dataset):
         """
         image = Image.open(f"{self.image_dir}/{self.df['image'][idx]}")
         image = self.transform(image)
-        # question = np.zeros(len(self.idx2question) + 1)  # 未知語用の要素を追加
-        # question_words = self.df["question"][idx].split(" ")
-        # for word in question_words:
-        #     try:
-        #         question[self.question2idx[word]] = 1  # one-hot表現に変換
-        #     except KeyError:
-        #         question[-1] = 1  # 未知語
-        question_words = process_text(self.df["question"][idx]).split()
-        question = [self.question2idx.get(word, len(self.question2idx)) for word in question_words]
-        question = question[:self.max_seq_length]  # 最大長に制限
-        question += [0] * (self.max_seq_length - len(question))  # パディング
+        question = np.zeros(len(self.idx2question) + 1)  # 未知語用の要素を追加
+        question_words = self.df["question"][idx].split(" ")
+        for word in question_words:
+            try:
+                question[self.question2idx[word]] = 1  # one-hot表現に変換
+            except KeyError:
+                question[-1] = 1  # 未知語
 
         if self.answer:
             answers = [self.answer2idx[process_text(answer["answer"])] for answer in self.df["answers"][idx]]
             mode_answer_idx = mode(answers)  # 最頻値を取得（正解ラベル）
 
-            # return image, torch.Tensor(question), torch.Tensor(answers), int(mode_answer_idx)
-            return image, torch.LongTensor(question), torch.Tensor(answers), int(mode_answer_idx)
+            return image, torch.Tensor(question), torch.Tensor(answers), int(mode_answer_idx)
+
         else:
-            # return image, torch.Tensor(question)
-            return image, torch.LongTensor(question)
+            return image, torch.Tensor(question)
 
     def __len__(self):
         return len(self.df)
@@ -294,56 +288,22 @@ def ResNet50():
 
 
 class VQAModel(nn.Module):
-    def __init__(self, vocab_size: int, n_answer: int, 
-                 embed_dim: int = 300, lstm_hidden: int = 512):
+    def __init__(self, vocab_size: int, n_answer: int):
         super().__init__()
         self.resnet = ResNet18()
         # self.resnet = ResNet50()
 
-        self.embedding = nn.Embedding(vocab_size, embed_dim)
-        
-        self.lstm = nn.LSTM(embed_dim, lstm_hidden, batch_first=True)
-
         self.text_encoder = nn.Linear(vocab_size, 512)
 
-        # self.fc = nn.Sequential(
-        #     nn.Linear(1024, 512),
-        #     nn.ReLU(inplace=True),
-        #     nn.Linear(512, n_answer)
-        # )
-        # dropout_rate = 0.5
-        # self.embedding = nn.Embedding(vocab_size, embed_dim)
-        # self.lstm1 = nn.LSTM(embed_dim, lstm_hidden, batch_first=True)
-        # self.dropout1 = nn.Dropout(dropout_rate)
-        # self.lstm2 = nn.LSTM(lstm_hidden, lstm_hidden, batch_first=True)
-        # self.dropout2 = nn.Dropout(dropout_rate)
-        # self.fc1 = nn.Linear(lstm_hidden, 1024)  # LSTMの出力から1024ユニットの全結合層へ
-        # self.tanh = nn.Tanh()
-        # self.fc2 = nn.Linear(1024, n_answer)  # 出力層
-
-        self.fc = nn.Sequential(            
-            nn.Dropout(0.5),
-            nn.Linear(512 + lstm_hidden, 512),
-            nn.Dropout(0.5)
+        self.fc = nn.Sequential(
+            nn.Linear(1024, 512),
             nn.ReLU(inplace=True),
             nn.Linear(512, n_answer)
         )
 
     def forward(self, image, question):
         image_feature = self.resnet(image)  # 画像の特徴量
-        # question_feature = self.text_encoder(question)  # テキストの特徴量
-        
-        # 質問の処理
-        embedded_question = self.embedding(question)
-        _, (question_feature, _) = self.lstm(embedded_question)
-        question_feature = question_feature.squeeze(0)
-
-        # embedded = self.embedding(question)
-        # x, _ = self.lstm1(embedded)
-        # x = self.dropout1(x)
-        # x, (hidden, _) = self.lstm2(x)
-        # x = self.dropout2(x)
-        # question_feature = hidden[-1].squeeze(0)  # 最後の隠れ状態を使用
+        question_feature = self.text_encoder(question)  # テキストの特徴量
 
         x = torch.cat([image_feature, question_feature], dim=1)
         x = self.fc(x)
@@ -442,47 +402,27 @@ class ZCAWhitening():
 GCN = gcn()
 # zca = ZCAWhitening()
 
-class RandomApply(object):
-    def __init__(self, transform, p=0.5):
-        self.transform = transform
-        self.p = p
-
-    def __call__(self, img):
-        if random.random() < self.p:
-            return self.transform(img)
-        return img
-    
 def main():
     # deviceの設定
     set_seed(42)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # dataloader / model
-    transform_train = transforms.Compose([
-            transforms.Resize((256, 256)),
-            transforms.RandomCrop(224),
-            transforms.RandomHorizontalFlip(),
-            RandomApply(transforms.ColorJitter(0.4, 0.4, 0.4, 0.1), p=0.8),
-            RandomApply(transforms.GaussianBlur((3, 3), (0.1, 2.0)), p=0.5),
-            transforms.ToTensor()
-    ])
-    transform_test = transforms.Compose([
+    transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor()
     ])
-    train_dataset = VQADataset(df_path="./data/train.json", image_dir="./data/train", transform=transform_train)
-    test_dataset = VQADataset(df_path="./data/valid.json", image_dir="./data/valid", transform=transform_test, answer=False)
+    train_dataset = VQADataset(df_path="./data/train.json", image_dir="./data/train", transform=transform)
+    test_dataset = VQADataset(df_path="./data/valid.json", image_dir="./data/valid", transform=transform, answer=False)
     test_dataset.update_dict(train_dataset)
 
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=128, shuffle=True)
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
-    
-    vocab_size = len(train_dataset.question2idx) + 1  # +1 for unknown tokens
-    model = VQAModel(vocab_size=vocab_size, n_answer=len(train_dataset.answer2idx)).to(device)
-    # model = VQAModel(vocab_size=len(train_dataset.question2idx)+1, n_answer=len(train_dataset.answer2idx)).to(device)
+
+    model = VQAModel(vocab_size=len(train_dataset.question2idx)+1, n_answer=len(train_dataset.answer2idx)).to(device)
 
     # optimizer / criterion
-    num_epoch = 20
+    num_epoch = 30
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
 
