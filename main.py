@@ -324,7 +324,7 @@ class VQAModel(nn.Module):
         self.fc = nn.Sequential(            
             nn.Dropout(0.5),
             nn.Linear(512 + lstm_hidden, 512),
-            nn.Dropout(0.5)
+            nn.Dropout(0.5),
             nn.ReLU(inplace=True),
             nn.Linear(512, n_answer)
         )
