@@ -321,12 +321,12 @@ class VQAModel(nn.Module):
         # self.tanh = nn.Tanh()
         # self.fc2 = nn.Linear(1024, n_answer)  # 出力層
 
-        self.fc = nn.Sequential(
+        self.fc = nn.Sequential(            
+            nn.Dropout(0.5),
             nn.Linear(512 + lstm_hidden, 512),
             nn.Dropout(0.5),
             nn.ReLU(inplace=True),
-            nn.Linear(512, n_answer),
-            nn.Dropout(0.5)
+            nn.Linear(512, n_answer)
         )
 
     def forward(self, image, question):
@@ -442,18 +442,36 @@ class ZCAWhitening():
 GCN = gcn()
 # zca = ZCAWhitening()
 
+class RandomApply(object):
+    def __init__(self, transform, p=0.5):
+        self.transform = transform
+        self.p = p
+
+    def __call__(self, img):
+        if random.random() < self.p:
+            return self.transform(img)
+        return img
+    
 def main():
     # deviceの設定
     set_seed(42)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # dataloader / model
-    transform = transforms.Compose([
+    transform_train = transforms.Compose([
+            transforms.Resize((256, 256)),
+            transforms.RandomCrop(224),
+            transforms.RandomHorizontalFlip(),
+            RandomApply(transforms.ColorJitter(0.4, 0.4, 0.4, 0.1), p=0.8),
+            RandomApply(transforms.GaussianBlur((3, 3), (0.1, 2.0)), p=0.5),
+            transforms.ToTensor()
+    ])
+    transform_test = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor()
     ])
-    train_dataset = VQADataset(df_path="./data/train.json", image_dir="./data/train", transform=transform)
-    test_dataset = VQADataset(df_path="./data/valid.json", image_dir="./data/valid", transform=transform, answer=False)
+    train_dataset = VQADataset(df_path="./data/train.json", image_dir="./data/train", transform=transform_train)
+    test_dataset = VQADataset(df_path="./data/valid.json", image_dir="./data/valid", transform=transform_test, answer=False)
     test_dataset.update_dict(train_dataset)
 
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=128, shuffle=True)
@@ -464,7 +482,7 @@ def main():
     # model = VQAModel(vocab_size=len(train_dataset.question2idx)+1, n_answer=len(train_dataset.answer2idx)).to(device)
 
     # optimizer / criterion
-    num_epoch = 30
+    num_epoch = 20
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
 
